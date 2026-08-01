@@ -1,0 +1,1018 @@
+-- # PostgreSQL Concurrency — From Zero
+--
+-- Concurrency means:
+--
+-- > **Multiple users or programs are using the database at the same time.**
+--
+-- Examples:
+--
+-- * Two people buy the last product.
+-- * Two users transfer money simultaneously.
+-- * Two workers claim the same job from a queue.
+-- * Two requests update the same account balance.
+--
+-- Without protection, the data can become wrong.
+--
+-- ---
+--
+-- # 1. The Core Problem
+--
+-- Suppose this table exists:
+--
+-- ```sql
+-- CREATE TABLE accounts (
+--     id INTEGER PRIMARY KEY,
+--     balance INTEGER NOT NULL
+-- );
+--
+-- INSERT INTO accounts (id, balance)
+-- VALUES (1, 1000);
+-- ```
+--
+-- Current balance:
+--
+-- ```text
+-- 1000
+-- ```
+--
+-- Now two requests happen at almost the same time.
+--
+-- ### Transaction A
+--
+-- ```text
+-- Read balance: 1000
+-- Add 100
+-- New balance: 1100
+-- ```
+--
+-- ### Transaction B
+--
+-- ```text
+-- Read balance: 1000
+-- Subtract 200
+-- New balance: 800
+-- ```
+--
+-- Possible execution:
+--
+-- ```text
+-- A reads 1000
+-- B reads 1000
+-- A writes 1100
+-- B writes 800
+-- ```
+--
+-- Final balance:
+--
+-- ```text
+-- 800
+-- ```
+--
+-- But the correct answer should be:
+--
+-- ```text
+-- 1000 + 100 - 200 = 900
+-- ```
+--
+-- The `+100` update was lost.
+--
+-- This is called a **lost update**.
+--
+-- ---
+--
+-- # 2. Atomicity
+--
+-- Atomicity means:
+--
+-- > An operation happens completely, or it does not happen at all.
+--
+-- Think of an atom as one indivisible unit.
+--
+-- Suppose you transfer `$100`:
+--
+-- ```text
+-- 1. Remove $100 from account A
+-- 2. Add $100 to account B
+-- ```
+--
+-- Both steps must succeed.
+--
+-- You must never get this:
+--
+-- ```text
+-- Money removed from A ✅
+-- Money added to B ❌
+-- ```
+--
+-- That would make money disappear.
+--
+-- The transaction must be:
+--
+-- ```text
+-- Both succeed
+-- ```
+--
+-- or:
+--
+-- ```text
+-- Both fail
+-- ```
+--
+-- ---
+--
+-- # 3. Single SQL Statements Are Atomic
+--
+-- A single PostgreSQL statement is atomic.
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance - 100
+-- WHERE id = 1;
+-- ```
+--
+-- PostgreSQL will not partially update the row.
+--
+-- It either completes successfully or fails.
+--
+-- This is also safer than:
+--
+-- ```text
+-- Read balance into application
+-- Calculate new value
+-- Write new value
+-- ```
+--
+-- Better:
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance - 100
+-- WHERE id = 1;
+-- ```
+--
+-- The calculation happens directly inside PostgreSQL.
+--
+-- ---
+--
+-- # 4. Transactions
+--
+-- A transaction groups multiple SQL statements into one unit.
+--
+-- ```sql
+-- BEGIN;
+--
+-- UPDATE accounts
+-- SET balance = balance - 100
+-- WHERE id = 1;
+--
+-- UPDATE accounts
+-- SET balance = balance + 100
+-- WHERE id = 2;
+--
+-- COMMIT;
+-- ```
+--
+-- Meaning:
+--
+-- ```text
+-- BEGIN
+--     Start transaction
+--
+-- COMMIT
+--     Permanently save everything
+-- ```
+--
+-- If something goes wrong:
+--
+-- ```sql
+-- ROLLBACK;
+-- ```
+--
+-- `ROLLBACK` cancels all changes made inside the transaction.
+--
+-- ---
+--
+-- ## Transaction example
+--
+-- ```sql
+-- BEGIN;
+--
+-- UPDATE accounts
+-- SET balance = balance - 100
+-- WHERE id = 1;
+--
+-- UPDATE accounts
+-- SET balance = balance + 100
+-- WHERE id = 2;
+--
+-- COMMIT;
+-- ```
+--
+-- If the second update fails before `COMMIT`:
+--
+-- ```sql
+-- ROLLBACK;
+-- ```
+--
+-- Then neither account is changed.
+--
+-- ---
+--
+-- # 5. Locks
+--
+-- A lock temporarily prevents conflicting operations.
+--
+-- Think of a bathroom door lock 🚪
+--
+-- One person enters and locks the door.
+--
+-- Another person must wait.
+--
+-- In PostgreSQL:
+--
+-- ```text
+-- Transaction A locks a row
+-- Transaction B tries to update the same row
+-- Transaction B waits
+-- Transaction A finishes
+-- Transaction B continues
+-- ```
+--
+-- This prevents both transactions from incorrectly modifying the same row simultaneously.
+--
+-- ---
+--
+-- # 6. PostgreSQL Automatically Locks Updated Rows
+--
+-- When PostgreSQL runs:
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance + 100
+-- WHERE id = 1;
+-- ```
+--
+-- it places a row-level lock on account `1`.
+--
+-- If another transaction runs:
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance - 200
+-- WHERE id = 1;
+-- ```
+--
+-- it waits until the first transaction finishes.
+--
+-- Example:
+--
+-- ### Connection A
+--
+-- ```sql
+-- BEGIN;
+--
+-- UPDATE accounts
+-- SET balance = balance + 100
+-- WHERE id = 1;
+-- ```
+--
+-- Do not commit yet.
+--
+-- ### Connection B
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance - 200
+-- WHERE id = 1;
+-- ```
+--
+-- Connection B waits.
+--
+-- Then Connection A runs:
+--
+-- ```sql
+-- COMMIT;
+-- ```
+--
+-- Now Connection B continues.
+--
+-- The operations happen in a safe order.
+--
+-- ---
+--
+-- # 7. Why Direct UPDATE Is Safer
+--
+-- Unsafe application logic:
+--
+-- ```text
+-- SELECT balance
+-- Calculate in Python
+-- UPDATE balance
+-- ```
+--
+-- Two programs may read the same old balance.
+--
+-- Safer SQL:
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance + 100
+-- WHERE id = 1;
+-- ```
+--
+-- PostgreSQL performs the read and update together while controlling the row lock.
+--
+-- ---
+--
+-- # 8. RETURNING
+--
+-- PostgreSQL can return the updated row immediately.
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance + 100
+-- WHERE id = 1
+-- RETURNING id, balance;
+-- ```
+--
+-- Result:
+--
+-- ```text
+-- id | balance
+-- 1  | 1100
+-- ```
+--
+-- Without `RETURNING`, you might need:
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance + 100
+-- WHERE id = 1;
+--
+-- SELECT balance
+-- FROM accounts
+-- WHERE id = 1;
+-- ```
+--
+-- With `RETURNING`, it happens in one statement.
+--
+-- ---
+--
+-- ## INSERT with RETURNING
+--
+-- ```sql
+-- INSERT INTO accounts (id, balance)
+-- VALUES (3, 500)
+-- RETURNING *;
+-- ```
+--
+-- Very useful when PostgreSQL generates an ID:
+--
+-- ```sql
+-- CREATE TABLE users (
+--     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+--     name VARCHAR(50)
+-- );
+-- ```
+--
+-- ```sql
+-- INSERT INTO users (name)
+-- VALUES ('Alice')
+-- RETURNING id;
+-- ```
+--
+-- ---
+--
+-- # 9. Unique Constraints and Concurrency
+--
+-- Suppose usernames must be unique:
+--
+-- ```sql
+-- CREATE TABLE users (
+--     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+--     username VARCHAR(50) UNIQUE
+-- );
+-- ```
+--
+-- Two requests try:
+--
+-- ```sql
+-- INSERT INTO users (username)
+-- VALUES ('alex');
+-- ```
+--
+-- PostgreSQL guarantees that only one can succeed.
+--
+-- The other receives a unique-constraint error.
+--
+-- The database—not your application—is the final authority.
+--
+-- Checking first is not enough:
+--
+-- ```sql
+-- SELECT *
+-- FROM users
+-- WHERE username = 'alex';
+-- ```
+--
+-- Two requests might both see no row, then both try to insert.
+--
+-- The `UNIQUE` constraint safely handles the race.
+--
+-- ---
+--
+-- # 10. ON CONFLICT
+--
+-- `ON CONFLICT` tells PostgreSQL what to do when an insert violates a unique constraint.
+--
+-- This is often called an **upsert**:
+--
+-- > Insert if missing; update if it already exists.
+--
+-- ---
+--
+-- ## Do nothing on conflict
+--
+-- ```sql
+-- INSERT INTO users (username)
+-- VALUES ('alex')
+-- ON CONFLICT (username)
+-- DO NOTHING;
+-- ```
+--
+-- If `alex` already exists, PostgreSQL does nothing instead of throwing an error.
+--
+-- ---
+--
+-- ## Update on conflict
+--
+-- Example counter:
+--
+-- ```sql
+-- CREATE TABLE page_views (
+--     page_name VARCHAR(100) PRIMARY KEY,
+--     view_count INTEGER NOT NULL
+-- );
+-- ```
+--
+-- First visit:
+--
+-- ```sql
+-- INSERT INTO page_views (page_name, view_count)
+-- VALUES ('home', 1);
+-- ```
+--
+-- Later visits should increase the count.
+--
+-- ```sql
+-- INSERT INTO page_views (page_name, view_count)
+-- VALUES ('home', 1)
+--
+-- ON CONFLICT (page_name)
+--
+-- DO UPDATE
+-- SET view_count = page_views.view_count + 1;
+-- ```
+--
+-- Meaning:
+--
+-- ```text
+-- If page does not exist:
+--     insert view_count = 1
+--
+-- If page already exists:
+--     increase current view_count by 1
+-- ```
+--
+-- PostgreSQL handles this safely under concurrency.
+--
+-- ---
+--
+-- ## `EXCLUDED`
+--
+-- Inside `ON CONFLICT`, `EXCLUDED` means:
+--
+-- > The row we attempted to insert.
+--
+-- ```sql
+-- INSERT INTO products (id, price)
+-- VALUES (1, 500)
+--
+-- ON CONFLICT (id)
+--
+-- DO UPDATE
+-- SET price = EXCLUDED.price;
+-- ```
+--
+-- If product `1` already exists, its price becomes `500`.
+--
+-- ---
+--
+-- # 11. SELECT ... FOR UPDATE
+--
+-- Normally, a `SELECT` does not lock the row against updates.
+--
+-- ```sql
+-- SELECT balance
+-- FROM accounts
+-- WHERE id = 1;
+-- ```
+--
+-- Another transaction may update the row immediately afterward.
+--
+-- But sometimes you want:
+--
+-- ```text
+-- Read the row
+-- Make decisions
+-- Update it safely
+-- ```
+--
+-- Use:
+--
+-- ```sql
+-- SELECT *
+-- FROM accounts
+-- WHERE id = 1
+-- FOR UPDATE;
+-- ```
+--
+-- This locks the selected row until the transaction ends.
+--
+-- ---
+--
+-- ## Example
+--
+-- ```sql
+-- BEGIN;
+--
+-- SELECT balance
+-- FROM accounts
+-- WHERE id = 1
+-- FOR UPDATE;
+-- ```
+--
+-- PostgreSQL locks account `1`.
+--
+-- Then:
+--
+-- ```sql
+-- UPDATE accounts
+-- SET balance = balance - 100
+-- WHERE id = 1;
+--
+-- COMMIT;
+-- ```
+--
+-- Another transaction trying to update account `1` must wait.
+--
+-- ---
+--
+-- # 12. Why FOR UPDATE Must Be Inside a Transaction
+--
+-- This is nearly pointless:
+--
+-- ```sql
+-- SELECT *
+-- FROM accounts
+-- WHERE id = 1
+-- FOR UPDATE;
+-- ```
+--
+-- By itself, PostgreSQL ends the implicit transaction immediately after the statement.
+--
+-- The lock is released immediately.
+--
+-- Correct:
+--
+-- ```sql
+-- BEGIN;
+--
+-- SELECT *
+-- FROM accounts
+-- WHERE id = 1
+-- FOR UPDATE;
+--
+-- UPDATE accounts
+-- SET balance = balance - 100
+-- WHERE id = 1;
+--
+-- COMMIT;
+-- ```
+--
+-- The lock stays until `COMMIT` or `ROLLBACK`.
+--
+-- ---
+--
+-- # 13. Inventory Example
+--
+-- ```sql
+-- CREATE TABLE products (
+--     id INTEGER PRIMARY KEY,
+--     name VARCHAR(50),
+--     stock INTEGER NOT NULL
+-- );
+--
+-- INSERT INTO products
+-- VALUES (1, 'Keyboard', 1);
+-- ```
+--
+-- Two users try to buy the final keyboard.
+--
+-- A safe transaction:
+--
+-- ```sql
+-- BEGIN;
+--
+-- SELECT stock
+-- FROM products
+-- WHERE id = 1
+-- FOR UPDATE;
+--
+-- UPDATE products
+-- SET stock = stock - 1
+-- WHERE id = 1
+--   AND stock > 0;
+--
+-- COMMIT;
+-- ```
+--
+-- But an even better single-statement approach is:
+--
+-- ```sql
+-- UPDATE products
+-- SET stock = stock - 1
+-- WHERE id = 1
+--   AND stock > 0
+-- RETURNING stock;
+-- ```
+--
+-- If zero rows are returned, the item was out of stock.
+--
+-- This single statement is atomic and usually simpler.
+--
+-- ---
+--
+-- # 14. FOR NO KEY UPDATE
+--
+-- ```sql
+-- SELECT *
+-- FROM accounts
+-- WHERE id = 1
+-- FOR NO KEY UPDATE;
+-- ```
+--
+-- This is a slightly weaker lock than `FOR UPDATE`.
+--
+-- It prevents other transactions from modifying the row in conflicting ways, but it is less strict regarding key-related operations.
+--
+-- For now, remember:
+--
+-- ```text
+-- FOR UPDATE
+--     Strong row lock for rows you plan to modify
+--
+-- FOR NO KEY UPDATE
+--     Slightly weaker row lock
+-- ```
+--
+-- You do not need to master the difference yet.
+--
+-- ---
+--
+-- # 15. SKIP LOCKED
+--
+-- Normally, if a selected row is locked, PostgreSQL waits.
+--
+-- ```sql
+-- SELECT *
+-- FROM jobs
+-- FOR UPDATE;
+-- ```
+--
+-- With:
+--
+-- ```sql
+-- SELECT *
+-- FROM jobs
+-- FOR UPDATE SKIP LOCKED;
+-- ```
+--
+-- PostgreSQL skips locked rows instead of waiting.
+--
+-- This is useful for job queues.
+--
+-- ---
+--
+-- ## Job queue example
+--
+-- ```sql
+-- CREATE TABLE jobs (
+--     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+--     task VARCHAR(100),
+--     status VARCHAR(20) DEFAULT 'pending'
+-- );
+-- ```
+--
+-- Worker 1:
+--
+-- ```sql
+-- BEGIN;
+--
+-- SELECT *
+-- FROM jobs
+-- WHERE status = 'pending'
+-- ORDER BY id
+-- LIMIT 1
+-- FOR UPDATE SKIP LOCKED;
+-- ```
+--
+-- Worker 1 locks job `1`.
+--
+-- Worker 2 runs the same query.
+--
+-- Because job `1` is locked, Worker 2 skips it and receives job `2`.
+--
+-- This allows multiple workers to process different jobs without duplication.
+--
+-- ---
+--
+-- # 16. NOWAIT
+--
+-- Another option:
+--
+-- ```sql
+-- SELECT *
+-- FROM accounts
+-- WHERE id = 1
+-- FOR UPDATE NOWAIT;
+-- ```
+--
+-- If the row is already locked, PostgreSQL immediately throws an error instead of waiting.
+--
+-- ```text
+-- Normal FOR UPDATE
+--     Wait for lock
+--
+-- FOR UPDATE NOWAIT
+--     Fail immediately
+--
+-- FOR UPDATE SKIP LOCKED
+--     Ignore locked rows
+-- ```
+--
+-- ---
+--
+-- # 17. Deadlocks
+--
+-- A deadlock happens when two transactions wait for each other forever.
+--
+-- Example:
+--
+-- ### Transaction A
+--
+-- ```text
+-- Locks account 1
+-- Then waits for account 2
+-- ```
+--
+-- ### Transaction B
+--
+-- ```text
+-- Locks account 2
+-- Then waits for account 1
+-- ```
+--
+-- Diagram:
+--
+-- ```text
+-- A waits for B
+-- B waits for A
+-- ```
+--
+-- PostgreSQL detects this and cancels one transaction.
+--
+-- To reduce deadlocks, lock rows in a consistent order.
+--
+-- Bad:
+--
+-- ```text
+-- Transaction A: account 1, then 2
+-- Transaction B: account 2, then 1
+-- ```
+--
+-- Better:
+--
+-- ```text
+-- Every transaction: lower account ID first
+-- ```
+--
+-- ---
+--
+-- # 18. Transactions Are Not Just Locks
+--
+-- Transactions provide the famous **ACID** properties:
+--
+-- ```text
+-- A — Atomicity
+-- C — Consistency
+-- I — Isolation
+-- D — Durability
+-- ```
+--
+-- For now:
+--
+-- * **Atomicity:** all or nothing.
+-- * **Consistency:** constraints remain valid.
+-- * **Isolation:** concurrent transactions do not interfere incorrectly.
+-- * **Durability:** committed data survives crashes.
+--
+-- Concurrency mainly relates to **isolation** and locking.
+--
+-- ---
+--
+-- # 19. Isolation Levels
+--
+-- PostgreSQL supports transaction isolation levels.
+--
+-- The default is:
+--
+-- ```text
+-- READ COMMITTED
+-- ```
+--
+-- You may see:
+--
+-- ```sql
+-- BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;
+-- ```
+--
+-- Other levels:
+--
+-- ```text
+-- READ COMMITTED
+-- REPEATABLE READ
+-- SERIALIZABLE
+-- ```
+--
+-- Simple meaning:
+--
+-- ### READ COMMITTED
+--
+-- Each statement sees data committed before that statement began.
+--
+-- ### REPEATABLE READ
+--
+-- The transaction sees a stable snapshot throughout the transaction.
+--
+-- ### SERIALIZABLE
+--
+-- PostgreSQL tries to make concurrent transactions behave as though they ran one after another.
+--
+-- `SERIALIZABLE` is safest but can cause transactions to fail and require retries.
+--
+-- You do not need to go deep into isolation levels yet.
+--
+-- ---
+--
+-- # 20. Stored Procedures and Functions
+--
+-- A stored procedure or function places database logic inside PostgreSQL.
+--
+-- Instead of sending many separate commands:
+--
+-- ```text
+-- Application → SQL 1
+-- Application → SQL 2
+-- Application → SQL 3
+-- ```
+--
+-- you can call one database routine.
+--
+-- Potential benefits:
+--
+-- * fewer network round trips;
+-- * reusable logic;
+-- * transaction control;
+-- * consistent server-side behavior.
+--
+-- But stored procedures do not magically solve concurrency.
+--
+-- You still need:
+--
+-- * correct transactions;
+-- * constraints;
+-- * atomic statements;
+-- * appropriate locks.
+--
+-- ---
+--
+-- # The Most Important Practical Rules
+--
+-- ## Use one atomic statement when possible
+--
+-- Better:
+--
+-- ```sql
+-- UPDATE products
+-- SET stock = stock - 1
+-- WHERE id = 1
+--   AND stock > 0
+-- RETURNING stock;
+-- ```
+--
+-- Instead of:
+--
+-- ```text
+-- SELECT stock
+-- Check in application
+-- UPDATE stock
+-- ```
+--
+-- ---
+--
+-- ## Use transactions for multi-step operations
+--
+-- ```sql
+-- BEGIN;
+--
+-- -- multiple related statements
+--
+-- COMMIT;
+-- ```
+--
+-- Use `ROLLBACK` when something fails.
+--
+-- ---
+--
+-- ## Let constraints protect the data
+--
+-- ```sql
+-- UNIQUE
+-- FOREIGN KEY
+-- CHECK
+-- NOT NULL
+-- ```
+--
+-- Application checks are useful, but database constraints are the final defense.
+--
+-- ---
+--
+-- ## Use `FOR UPDATE` when you must read first, then update
+--
+-- ```sql
+-- BEGIN;
+--
+-- SELECT ...
+-- FOR UPDATE;
+--
+-- UPDATE ...;
+--
+-- COMMIT;
+-- ```
+--
+-- ---
+--
+-- ## Use `ON CONFLICT` for safe insert-or-update behavior
+--
+-- ```sql
+-- INSERT ...
+-- ON CONFLICT (...)
+-- DO UPDATE ...;
+-- ```
+--
+-- ---
+--
+-- # Final Mental Model
+--
+-- Imagine PostgreSQL as a bank clerk handling many customers.
+--
+-- ```text
+-- Transaction
+--     A complete piece of work
+--
+-- Atomicity
+--     Complete everything or cancel everything
+--
+-- Lock
+--     Reserve a row temporarily
+--
+-- COMMIT
+--     Save changes permanently
+--
+-- ROLLBACK
+--     Cancel transaction changes
+--
+-- FOR UPDATE
+--     Read and reserve a row for modification
+--
+-- ON CONFLICT
+--     Decide what to do when an insert collides
+--
+-- SKIP LOCKED
+--     Ignore rows another worker is using
+-- ```
+--
+-- The central idea is:
+--
+-- > **Concurrency is not about making everything happen simultaneously. It is about allowing simultaneous work while guaranteeing that the final data remains correct.**
