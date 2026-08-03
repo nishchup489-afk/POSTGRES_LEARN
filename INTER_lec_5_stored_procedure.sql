@@ -85,17 +85,16 @@ This function accepts two integers
 and returns their sum.
 */
 
-CREATE OR REPLACE FUNCTION add_numbers(
-    first_number INTEGER,
-    second_number INTEGER
+CREATE OR REPLACE FUNCTION add_numbers (
+    first_num INTEGER ,
+    second_num INTEGER
 )
 RETURNS INTEGER
-LANGUAGE SQL
-AS $$
-
-    SELECT first_number + second_number;
-
-$$;
+LANGUAGE sql
+AS
+    $$
+        SELECT first_num + second_num;
+    $$;
 
 
 /*
@@ -116,6 +115,7 @@ Result:
 --                    FUNCTION WITH TABLE DATA
 -- =====================================================================
 
+DROP TABLE IF EXISTS employees cascade ;
 CREATE TABLE employees (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name VARCHAR(40),
@@ -133,25 +133,22 @@ VALUES
 Function that returns an employee's salary.
 */
 
-CREATE OR REPLACE FUNCTION get_employee_salary(
+CREATE OR REPLACE FUNCTION individual_salary (
     employee_id INTEGER
 )
 RETURNS INTEGER
-LANGUAGE SQL
-AS $$
-
-    SELECT salary
-    FROM employees
-    WHERE id = employee_id;
-
-$$;
+LANGUAGE sql
+AS
+    $$
+        SELECT salary FROM employees;
+    $$;
 
 
 /*
 Call it:
 */
 
-SELECT get_employee_salary(1);
+SELECT individual_salary(1);
 
 
 /*
@@ -176,25 +173,24 @@ A procedure performs operations.
 Unlike a function, it is called with CALL.
 */
 
-CREATE OR REPLACE PROCEDURE increase_salary(
-    employee_id INTEGER,
+
+
+CREATE OR REPLACE PROCEDURE increase_salary_for_individual (
+    employee_id INTEGER ,
     amount INTEGER
 )
-LANGUAGE SQL
-AS $$
-
-    UPDATE employees
-    SET salary = salary + amount
-    WHERE id = employee_id;
-
-$$;
+    LANGUAGE sql
+    AS
+    $$
+        SELECT salary FROM employees;
+    $$;
 
 
 /*
 Call the procedure:
 */
 
-CALL increase_salary(1, 5000);
+CALL increase_salary_for_individual(1, 5000);
 
 
 /*
@@ -250,29 +246,25 @@ LANGUAGE plpgsql supports:
 */
 
 
-CREATE OR REPLACE FUNCTION salary_level(
+CREATE OR REPLACE FUNCTION salary_level (
     employee_salary INTEGER
 )
 RETURNS VARCHAR
 LANGUAGE plpgsql
-AS $$
+AS
+    $$
+        BEGIN
+            IF employee_salary > 800000 THEN
+                RETURN 'HIGH';
 
-BEGIN
+            ELSIF employee_salary >= 50000 THEN
+                RETURN 'MEDIUM';
 
-    IF employee_salary >= 80000 THEN
-        RETURN 'High';
-
-    ELSIF employee_salary >= 50000 THEN
-        RETURN 'Medium';
-
-    ELSE
-        RETURN 'Low';
-
-    END IF;
-
-END;
-
-$$;
+            ELSE
+                RETURN 'LOW';
+            end if;
+        end;
+    $$;
 
 
 /*
@@ -293,6 +285,7 @@ Medium
 --                     UPDATED_AT EXAMPLE
 -- =====================================================================
 
+DROP TABLE IF EXISTS users cascade;
 CREATE TABLE users (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name VARCHAR(50),
@@ -324,20 +317,15 @@ that a trigger will execute.
 NEW represents the new version of the row.
 */
 
-CREATE OR REPLACE FUNCTION set_updated_at()
+CREATE OR REPLACE FUNCTION set_updated_at ()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $$
-
-BEGIN
-
-    NEW.updated_at = NOW();
-
-    RETURN NEW;
-
-END;
-
-$$;
+AS
+    $$
+        BEGIN
+            NEW.updated_at = NOW();
+        end;
+    $$;
 
 
 /*
@@ -479,7 +467,7 @@ the same name with different parameters.
 Drop a procedure:
 */
 
-DROP PROCEDURE increase_salary(INTEGER, INTEGER);
+DROP FUNCTION increase_salary(INTEGER, INTEGER);
 
 
 /*
